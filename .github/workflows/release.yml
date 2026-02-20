@@ -17,7 +17,7 @@ permissions:
 jobs:
   goreleaser:
     runs-on: ubuntu-latest
-    container: ghcr.io/bdwyertech/rust-crosscompile:latest
+    container: ghcr.io/bdwyertech/rust-crosscompile:2026-02-04--4e4b2bf
     steps:
       - name: Check out code
         uses: actions/checkout@v6
