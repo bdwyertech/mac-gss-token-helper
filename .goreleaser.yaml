@@ -1,0 +1,70 @@
+version: 2
+
+builds:
+  # You can have multiple builds defined as a yaml list
+  - #
+    # ID of the build.
+    #
+    # Default: Project directory name.
+    id: 'gss-token-helper'
+
+    # Use rust.
+    builder: rust
+
+    # Binary name.
+    # Can be a path (e.g. `bin/app`) to wrap the binary in a directory.
+    #
+    # Default: Project directory name.
+    binary: aws-whoami
+
+    # List of targets to be built, in Rust's format.
+    # Default: [ "x86_64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-pc-windows-gnu", "aarch64-unknown-linux-gnu", "aarch64-apple-darwin" ]
+    targets:
+      - aarch64-apple-darwin
+      - x86_64-apple-darwin
+
+archives:
+  - name_template: '{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}'
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - ONLY_BINARY*
+
+checksum:
+  name_template: 'checksums.txt'
+
+snapshot:
+  version_template: '{{ .Tag }}-next'
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - Merge pull request
+      - Merge branch
+
+release:
+  # disable: true
+# creates SBOMs of all archives and the source tarball using syft
+# https://goreleaser.com/customization/sbom
+sboms:
+  - artifacts: archive
+  - id: source # Two different sbom configurations need two different IDs
+    artifacts: source
+# signs the checksum file
+# all files (including the sboms) are included in the checksum, so we don't need to sign each one if we don't want to
+# https://goreleaser.com/customization/sign
+signs:
+  - cmd: cosign
+    signature: '${artifact}.sigstore.json'
+    args:
+      - sign-blob
+      - '--bundle=${signature}'
+      - '${artifact}'
+      - '--yes' # needed on cosign 2.0.0+
+    artifacts: checksum
+    output: true

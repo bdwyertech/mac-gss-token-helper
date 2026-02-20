@@ -1,0 +1,32 @@
+[package]
+name = "gss-token-helper"
+version = "0.1.0"
+edition = "2024"
+description = "macOS SPNEGO token helper using GSS.framework"
+license = "MIT"
+repository = "https://github.com/bdwyertech/mac-gss-token-helper"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+opt-level = "s" # use 3 for performance-critical applications
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
+
+[dependencies]
+base64 = "0.22"
+clap = { version = "4.0", features = ["derive", "std"], default-features = false }
+clap_complete = "4.0"
+
+[build-dependencies]
+built = { version = "0.8", features = [
+    "cargo-lock",
+    "chrono",
+    "dependency-tree",
+    "git2",
+    "semver"
+] }

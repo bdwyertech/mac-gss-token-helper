@@ -1,0 +1,60 @@
+name: release
+
+on:
+  push:
+    # run only against tags
+    tags:
+      - '*'
+
+# You might not need all of this...
+permissions:
+  attestations: write
+  contents: write
+  id-token: write
+  issues: write
+  packages: write
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-latest
+    container: ghcr.io/bdwyertech/rust-crosscompile:latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Git Stuff
+        id: git
+        run: |
+          git config --global --add safe.directory $GITHUB_WORKSPACE
+          echo "SOURCE_NAME=${GITHUB_REF#refs/*/}" >> $GITHUB_OUTPUT
+          echo "SOURCE_BRANCH=${GITHUB_REF#refs/heads/}" >> $GITHUB_OUTPUT
+          echo "SOURCE_TAG=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Setup Rust Toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          cache: true
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v4.0.0
+
+      - name: Install Syft
+        uses: anchore/sbom-action/download-syft@v0
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          # 'latest', 'nightly', or a semver
+          version: '~> v2'
+          args: release --clean
+        env:
+          BUILD_VERSION: ${{ steps.git.outputs.SOURCE_TAG }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attest Checksums
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-checksums: ./dist/checksums.txt

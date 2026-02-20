@@ -1,0 +1,6 @@
+[net]
+retry = 2
+git-fetch-with-cli = true
+
+[build]
+jobs = 10
