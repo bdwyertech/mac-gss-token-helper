@@ -50,8 +50,19 @@ pub struct gss_OID_set_desc {
 
 pub type gss_OID_set = *mut gss_OID_set_desc;
 
-/// Channel bindings (we always pass null).
-pub type gss_channel_bindings_t = *mut c_void;
+/// Channel bindings structure for TLS endpoint binding (RFC 5929).
+#[repr(C)]
+pub struct gss_channel_bindings_struct {
+    pub initiator_addrtype: OM_uint32,
+    pub initiator_address: gss_buffer_desc,
+    pub acceptor_addrtype: OM_uint32,
+    pub acceptor_address: gss_buffer_desc,
+    pub application_data: gss_buffer_desc,
+}
+
+pub type gss_channel_bindings_t = *mut gss_channel_bindings_struct;
+
+pub const GSS_C_NO_CHANNEL_BINDINGS_P: gss_channel_bindings_t = std::ptr::null_mut();
 
 // --- Well-known constants ---
 
@@ -62,11 +73,14 @@ pub const GSS_C_NO_OID: gss_OID = std::ptr::null_mut();
 pub const GSS_C_NO_OID_SET: gss_OID_set = std::ptr::null_mut();
 pub const GSS_C_NO_CHANNEL_BINDINGS: gss_channel_bindings_t = std::ptr::null_mut();
 pub const GSS_C_INDEFINITE: OM_uint32 = 0xFFFFFFFF;
+pub const GSS_C_AF_UNSPECIFIED: OM_uint32 = 0;
 
 // --- Request flags ---
 
+pub const GSS_C_DELEG_FLAG: OM_uint32 = 1;
 pub const GSS_C_MUTUAL_FLAG: OM_uint32 = 2;
 pub const GSS_C_SEQUENCE_FLAG: OM_uint32 = 8;
+pub const GSS_C_DELEG_POLICY_FLAG: OM_uint32 = 32768;
 
 // --- Status code classification ---
 

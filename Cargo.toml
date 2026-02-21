@@ -19,7 +19,7 @@ lto = "thin"
 
 [dependencies]
 base64 = "0.22"
-clap = { version = "4.0", features = ["derive", "std"], default-features = false }
+clap = { version = "4.0", features = ["derive", "std", "help"], default-features = false }
 clap_complete = "4.0"
 
 [build-dependencies]
