@@ -20,7 +20,7 @@ jobs:
     container: ghcr.io/bdwyertech/rust-crosscompile:2026-02-04--4e4b2bf
     steps:
       - name: Check out code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
