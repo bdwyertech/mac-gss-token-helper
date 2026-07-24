@@ -18,7 +18,7 @@ inherits = "release"
 lto = "thin"
 
 [dependencies]
-base64 = "0.22"
+base64 = "0.23"
 clap = { version = "4.6", features = ["derive", "std", "help"], default-features = false }
 clap_complete = "4.6"
 
