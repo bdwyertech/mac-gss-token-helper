@@ -4,12 +4,12 @@
 //! base64-encoded to stdout. Designed to be called by applications that
 //! cannot access KCM (Mach IPC) directly.
 
-mod gss;
-mod gss_ffi;
+use gss_token_helper::app::{self, AppError};
+use gss_token_helper::gss;
+use gss_token_helper::input::{ServicePrincipalName, decode_hex};
 
-use base64::engine::general_purpose::STANDARD;
-use base64::Engine;
 use clap::Parser;
+use gss_token_helper::protocol;
 use std::io::{self, BufRead, Write};
 use std::process;
 
@@ -58,7 +58,7 @@ fn main() {
         return;
     }
 
-    let spn = match cli.spn {
+    let raw_spn = match cli.spn {
         Some(s) if !s.is_empty() => s,
         _ => {
             eprintln!("Usage: gss-token-helper [OPTIONS] <service/hostname>");
@@ -68,7 +68,16 @@ fn main() {
         }
     };
 
-    let name = match gss::import_name(&spn) {
+    // Validate structure before anything reaches the GSS FFI layer.
+    let spn = match ServicePrincipalName::parse(&raw_spn) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("gss-token-helper: invalid SPN \"{raw_spn}\": {e}");
+            process::exit(1);
+        }
+    };
+
+    let name = match gss::import_name(spn.as_str()) {
         Ok(n) => n,
         Err(e) => die_gss_error(&format!("failed to import name \"{spn}\""), &e),
     };
@@ -81,15 +90,39 @@ fn main() {
         })
     });
 
+    let delegation = if cli.delegate {
+        gss::DelegationMode::Required
+    } else {
+        gss::DelegationMode::Disabled
+    };
     let opts = gss::InitSecContextOpts {
-        delegate: cli.delegate,
+        delegation,
         channel_bindings: cb_bytes.as_deref(),
     };
 
-    if cli.negotiate {
-        run_negotiate_mode(&name, &opts);
+    let outcome = if cli.negotiate {
+        let stdin = io::stdin();
+        let stdout = io::stdout();
+        run_negotiate_mode(&name, &opts, &mut stdin.lock(), &mut stdout.lock())
     } else {
-        run_single_shot(&name, &opts);
+        let stdout = io::stdout();
+        run_single_shot(&name, &opts, &mut stdout.lock())
+    };
+
+    // The single place that reports a failure and picks the exit status.
+    if let Err(e) = outcome {
+        report(&e);
+        process::exit(1);
+    }
+}
+
+/// Print a fatal error to stderr, adding GSS hints when available.
+fn report(e: &AppError) {
+    eprintln!("Error: {e}");
+    if let AppError::Context(_, gss::ContextError::Gss(g)) = e
+        && let Some(hint) = g.hint()
+    {
+        eprintln!("{hint}");
     }
 }
 
@@ -102,131 +135,77 @@ fn die_gss_error(context: &str, e: &gss::GssError) -> ! {
     process::exit(1);
 }
 
-/// Single-shot mode: acquire one token and print it.
-fn run_single_shot(name: &gss::GssName, opts: &gss::InitSecContextOpts<'_>) {
+/// Single-shot mode: acquire one token and write it to `out`.
+fn run_single_shot<W: Write>(
+    name: &gss::GssName,
+    opts: &gss::InitSecContextOpts<'_>,
+    out: &mut W,
+) -> Result<(), AppError> {
     let mut ctx = gss::SecurityContext::new(name, opts);
 
-    let token = match ctx.step(None) {
+    let token = match ctx.start() {
         Ok(gss::InitSecContextResult::Complete(t))
         | Ok(gss::InitSecContextResult::ContinueNeeded(t)) => t,
-        Err(e) => die_gss_error("gss_init_sec_context failed", &e),
+        Err(e) => return Err(AppError::Context("gss_init_sec_context failed".into(), e)),
     };
 
-    if token.is_empty() {
-        eprintln!("Error: GSS returned an empty token");
-        process::exit(1);
-    }
-
-    // Output the base64-encoded SPNEGO token on a single line, no trailing newline.
-    print!("{}", STANDARD.encode(&token));
+    // The base64-encoded SPNEGO token on a single line, no trailing newline.
+    app::write_single_shot(out, &token)
 }
 
 /// Multi-leg negotiation mode.
 ///
-/// Protocol:
-///   1. Writes the initial base64 token to stdout (one line, newline-terminated)
-///   2. Reads a base64-encoded server response token from stdin (one line)
-///   3. Feeds it to gss_init_sec_context, writes the next token to stdout
-///   4. Repeats until GSS_S_COMPLETE
-///   5. On completion, writes "OK" to stdout and exits 0
-///   6. An empty line from stdin aborts negotiation
-fn run_negotiate_mode(name: &gss::GssName, opts: &gss::InitSecContextOpts<'_>) {
+/// Protocol (see [`protocol`]):
+///   1. Writes one `CONTINUE`/`COMPLETE` record per step, newline-terminated
+///   2. Reads one peer record per leg from stdin under a hard byte bound
+///   3. Feeds the decoded token to gss_init_sec_context
+///   4. Repeats until a `COMPLETE` record is written, then exits 0
+///   5. Aborts nonzero on a malformed record, a limit breach, or early EOF
+fn run_negotiate_mode<R: BufRead, W: Write>(
+    name: &gss::GssName,
+    opts: &gss::InitSecContextOpts<'_>,
+    reader: &mut R,
+    out: &mut W,
+) -> Result<(), AppError> {
     let mut ctx = gss::SecurityContext::new(name, opts);
-    let stdin = io::stdin();
-    let stdout = io::stdout();
-    let mut stdout = stdout.lock();
 
     // First leg: no input token.
-    let result = match ctx.step(None) {
-        Ok(r) => r,
-        Err(e) => die_gss_error("gss_init_sec_context failed (leg 1)", &e),
-    };
+    let result = ctx
+        .start()
+        .map_err(|e| AppError::Context("gss_init_sec_context failed (leg 1)".into(), e))?;
+    if emit(out, result)? {
+        return Ok(());
+    }
 
-    match result {
-        gss::InitSecContextResult::Complete(token) => {
-            // Single-leg negotiation completed immediately.
-            if !token.is_empty() {
-                let _ = writeln!(stdout, "{}", STANDARD.encode(&token));
-            }
-            let _ = writeln!(stdout, "OK");
-            return;
+    // Subsequent legs: read peer records from stdin under a hard byte bound.
+    let mut buf = Vec::new();
+    for leg in 1..protocol::MAX_LEGS {
+        match protocol::read_bounded_line(reader, protocol::MAX_ENCODED_LINE, &mut buf)? {
+            Some(()) => {}
+            None => break,
         }
-        gss::InitSecContextResult::ContinueNeeded(token) => {
-            if token.is_empty() {
-                eprintln!("Error: GSS returned an empty token on leg 1");
-                process::exit(1);
-            }
-            let _ = writeln!(stdout, "{}", STANDARD.encode(&token));
-            let _ = stdout.flush();
+        let line = String::from_utf8_lossy(&buf).trim().to_string();
+        let record = protocol::decode(&line)?;
+        let result = ctx.continue_with(record.token()).map_err(|e| {
+            AppError::Context(format!("gss_init_sec_context failed (leg {leg})"), e)
+        })?;
+        if emit(out, result)? {
+            return Ok(());
         }
     }
 
-    // Subsequent legs: read response tokens from stdin.
-    for line in stdin.lock().lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(e) => {
-                eprintln!("Error: failed to read from stdin: {e}");
-                process::exit(1);
-            }
-        };
-
-        let line = line.trim().to_string();
-        if line.is_empty() {
-            eprintln!("Error: negotiation aborted (empty input)");
-            process::exit(1);
-        }
-
-        let response_bytes = match STANDARD.decode(&line) {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("Error: invalid base64 input: {e}");
-                process::exit(1);
-            }
-        };
-
-        let result = match ctx.step(Some(&response_bytes)) {
-            Ok(r) => r,
-            Err(e) => die_gss_error("gss_init_sec_context failed", &e),
-        };
-
-        match result {
-            gss::InitSecContextResult::Complete(token) => {
-                if !token.is_empty() {
-                    let _ = writeln!(stdout, "{}", STANDARD.encode(&token));
-                }
-                let _ = writeln!(stdout, "OK");
-                return;
-            }
-            gss::InitSecContextResult::ContinueNeeded(token) => {
-                if !token.is_empty() {
-                    let _ = writeln!(stdout, "{}", STANDARD.encode(&token));
-                    let _ = stdout.flush();
-                }
-            }
-        }
-    }
-
-    // EOF on stdin before negotiation completed.
-    eprintln!("Error: stdin closed before negotiation completed");
-    process::exit(1);
+    // Either stdin closed early or the leg budget ran out.
+    Err(AppError::Incomplete {
+        legs: protocol::MAX_LEGS,
+    })
 }
 
-/// Decode a hex string into bytes.
-fn decode_hex(s: &str) -> Result<Vec<u8>, String> {
-    // Strip optional "0x" prefix.
-    let s = s.strip_prefix("0x").unwrap_or(s);
-    let s = s.strip_prefix("0X").unwrap_or(s);
-
-    if s.len() % 2 != 0 {
-        return Err("odd number of hex digits".to_string());
-    }
-
-    (0..s.len())
-        .step_by(2)
-        .map(|i| {
-            u8::from_str_radix(&s[i..i + 2], 16)
-                .map_err(|e| format!("invalid hex at position {i}: {e}"))
-        })
-        .collect()
+/// Write one protocol record for a step result; returns true when final.
+fn emit<W: Write>(out: &mut W, result: gss::InitSecContextResult) -> Result<bool, AppError> {
+    let record = match result {
+        gss::InitSecContextResult::Complete(t) => protocol::Record::Complete(t),
+        gss::InitSecContextResult::ContinueNeeded(t) => protocol::Record::Continue(t),
+    };
+    app::write_record(out, &record)?;
+    Ok(record.is_final())
 }

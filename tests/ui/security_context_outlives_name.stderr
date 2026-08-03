@@ -1,0 +1,12 @@
+error[E0597]: `name` does not live long enough
+  --> tests/ui/security_context_outlives_name.rs:14:35
+   |
+12 |     let ctx = {
+   |         --- borrow later stored here
+13 |         let name = gss::import_name("HTTP@example.com").expect("import");
+   |             ---- binding `name` declared here
+14 |         gss::SecurityContext::new(&name, &opts)
+   |                                   ^^^^^ borrowed value does not live long enough
+15 |         // `name` is dropped here, releasing the underlying gss_name_t.
+16 |     };
+   |     - `name` dropped here while still borrowed

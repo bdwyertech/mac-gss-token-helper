@@ -36,14 +36,44 @@ For servers that require multiple round-trips (mutual authentication, some proxy
 gss-token-helper --negotiate HTTP/proxy.corp.example.com
 ```
 
-Protocol:
-1. Writes the initial base64 token to stdout (one line)
-2. Reads a base64-encoded server response token from stdin (one line)
-3. Writes the next output token to stdout
-4. Repeats until negotiation completes
-5. Writes `OK` on completion and exits 0
+Protocol (single unversioned record format, no negotiation of versions):
 
-### Credential delegation
+1. The helper writes one record line to stdout per step.
+2. The parent writes one base64-encoded server response token per line to stdin.
+3. Repeats until a `COMPLETE` record is written, then the helper exits 0.
+
+Record grammar, one line each, `<token>` base64 (standard alphabet, padded):
+
+```
+CONTINUE <token>    another leg is required; send <token> to the server
+CONTINUE            same, with an empty token
+COMPLETE <token>    negotiation finished; <token> is the final output token
+COMPLETE            same, with no final token
+```
+
+Limits (exceeding any of these is an error, never an unbounded allocation):
+
+| Limit | Value |
+|-------|-------|
+| Encoded input line, excluding newline | 65536 bytes |
+| Decoded token | 49152 bytes |
+| Negotiation legs | 16 |
+
+### Delegation modes
+
+Delegation is an explicit three-state choice; each mode requests exactly one
+flag set and nothing more:
+
+| Mode | Flags requested | How to select |
+|------|-----------------|---------------|
+| Disabled (default) | none | omit `--delegate` |
+| Policy | `GSS_C_DELEG_POLICY_FLAG` | KDC/service policy (OK-AS-DELEGATE) |
+| Required | `GSS_C_DELEG_FLAG` | `--delegate` |
+
+Every context additionally requests mutual authentication, replay detection,
+sequence detection, integrity, and confidentiality. The returned flags are
+verified against what was requested, so a service that silently drops a
+required property is reported as a failure instead of being ignored.
 
 Forward your TGT to the service (requires a forwardable ticket from `kinit -f`):
 
@@ -60,6 +90,14 @@ gss-token-helper --channel-bindings 0x<hex-encoded-hash> HTTP/proxy.corp.example
 ```
 
 The hash is the SHA-256 (or appropriate algorithm) of the server's TLS certificate, as defined in RFC 5929.
+
+### Context metadata verification
+
+Each completed step exposes the negotiated mechanism OID (dotted form), the
+returned flags, and whether another leg is required. Before a token is emitted
+the returned flags are checked against the requested security properties and,
+when an expected mechanism is configured, the negotiated OID is compared to it;
+a mismatch is an error naming both OIDs.
 
 ### All options
 
@@ -86,8 +124,17 @@ kinit user@REALM
 
 | Code | Meaning |
 |------|---------|
-| 0    | Token successfully generated (base64 on stdout) |
+| 0    | Token successfully generated and fully written to stdout |
 | 1    | Failure (error message on stderr) |
+
+Errors are reported and the exit status is chosen in exactly one place, and
+stdout is written with checked writes plus a checked flush. A closed or full
+stdout is therefore a failure, never a silently truncated success. Reported
+categories are: usage and invalid SPN, invalid channel-binding hex, stdout or
+stdin I/O failure, malformed protocol record (unknown keyword, bad base64,
+oversized line or token), rejected context-state transition, GSS failure with
+the underlying major/minor status text, and negotiation that exceeded the leg
+limit.
 
 ## Integration
 
@@ -111,7 +158,7 @@ token := readLine(stdoutPipe) // base64 token
 // Send to server, get response...
 writeLine(stdinPipe, serverResponseBase64)
 
-// Read next token (or "OK" if done)
+// Read next record: "CONTINUE <b64>" or "COMPLETE [<b64>]"
 response := readLine(stdoutPipe)
 ```
 
@@ -120,6 +167,28 @@ Then use the token in an HTTP header:
 ```
 Proxy-Authorization: Negotiate <token>
 ```
+
+## Test strategy
+
+| Layer | Location | Notes |
+|-------|----------|-------|
+| Unit and property tests | `#[cfg(test)]` modules in `src/` | `proptest`, every property ≥100 generated cases |
+| Subprocess behavior | `tests/cli_output.rs` | `assert_cmd` for exact bytes and exit status |
+| Compile-fail guarantees | `tests/ui.rs` + `tests/ui/` | `trybuild`, gated behind the `ui-tests` feature |
+| Live Kerberos / EPA | `tests/gss_macos.rs` | `#[ignore]`d, opt-in via `GSS_TEST_*` env vars |
+
+```bash
+cargo test                      # unit, property, and subprocess tests
+cargo test --features ui-tests  # compile-fail tests (toolchain-sensitive)
+
+# Opt-in live tests; require a real KDC and service principal.
+GSS_TEST_SPN=HTTP/host.example.com cargo test --test gss_macos -- --ignored
+```
+
+CI runs a required macOS `quality` job (`cargo fmt --check`, `cargo clippy
+--all-targets -- -D warnings`, `cargo test`, `cargo build`) and a separate
+`ui-tests` job so toolchain-sensitive diagnostics cannot block the gate. The
+toolchain is pinned in `rust-toolchain.toml`.
 
 ## License
 

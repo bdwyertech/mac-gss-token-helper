@@ -6,6 +6,14 @@ description = "macOS SPNEGO token helper using GSS.framework"
 license = "MIT"
 repository = "https://github.com/bdwyertech/mac-gss-token-helper"
 
+[lib]
+name = "gss_token_helper"
+path = "src/lib.rs"
+
+[[bin]]
+name = "gss-token-helper"
+path = "src/main.rs"
+
 [profile.release]
 strip = true
 lto = true
@@ -18,9 +26,18 @@ inherits = "release"
 lto = "thin"
 
 [dependencies]
-base64 = "0.22"
+base64 = "0.23"
 clap = { version = "4.6", features = ["derive", "std", "help"], default-features = false }
 clap_complete = "4.6"
+
+[features]
+ui-tests = []
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+proptest = "1"
+trybuild = "1"
 
 [build-dependencies]
 built = { version = "0.8", features = [

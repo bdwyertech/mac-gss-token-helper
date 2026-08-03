@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  # Required gate. Runs on macOS because the crate links GSS.framework.
+  quality:
+    name: Quality (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The pinned toolchain comes from rust-toolchain.toml.
+      - name: Show toolchain
+        run: rustc --version && cargo --version
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lints
+        run: cargo clippy --all-targets -- -D warnings
+
+      # Credential-dependent tests in tests/gss_macos.rs stay #[ignore]d here.
+      - name: Tests
+        run: cargo test
+
+      - name: Build
+        run: cargo build
+
+  # Separate job: compile-fail assertions are toolchain-sensitive, so a
+  # nightly-vs-pinned diagnostic drift must not block the required gate.
+  ui-tests:
+    name: UI tests (trybuild)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-ui-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-ui-
+
+      - name: Compile-fail tests
+        run: cargo test --features ui-tests
