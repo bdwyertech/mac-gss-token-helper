@@ -20,7 +20,7 @@ jobs:
     name: Quality (macOS)
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The pinned toolchain comes from rust-toolchain.toml.
       - name: Show toolchain
@@ -55,7 +55,7 @@ jobs:
     name: UI tests (trybuild)
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Cache cargo registry and build
         uses: actions/cache@v4
